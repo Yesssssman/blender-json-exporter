@@ -12,4 +12,4 @@ This plugin is specially created for Minecraft - Epic Fight development, in blen
 
 ## About the bug and supports
 
-Since this exporter is designed for a very restricted purpose, I won't provide any support. The mesh, armature, and animation data must be created first to export this properly.
+Since this exporter is designed for a very restricted purpose, I won't provide any support. The mesh, armature, and animation data must be created first to export the model properly.
