@@ -69,8 +69,6 @@ def export_mesh(obj, bones):
     position_array = [round(f, 6) for v in obj_mesh.vertices for f in v.co[:]]
     uv_array = []
     normal_array = []
-    indices_array = []
-    
     loops = obj_mesh.loops
     
     uv_unique_count = no_unique_count = 0
@@ -111,19 +109,32 @@ def export_mesh(obj, bones):
             uv_ls.append(uv_val)
     del uv_dict, uv, f_index, uv_index, uv_ls, uv_get, uv_key, uv_val
     
+    parts = {'noGroups': []}
+    
+    for vg in obj.vertex_groups:
+        if vg.name[-5:] == "_mesh":
+            parts[vg.name[:-5]] = []
+    
     # export indice data
     for f_index, f in enumerate(obj_mesh.polygons):
         f_v = [(vi, obj_mesh.vertices[v_idx], l_idx) for vi, (v_idx, l_idx) in enumerate(zip(f.vertices, f.loop_indices))]
         for vi, v, li in f_v:
-            indices_array.append(v.index)
-            indices_array.append(uv_face_mapping[f_index][vi])
-            indices_array.append(loops_to_normals[li])
+            mesh_vgs = [obj.vertex_groups[vg.group].name for vg in v.groups]
+            mesh_vgs = list(filter(lambda x: x[-5:] == "_mesh", mesh_vgs))
+            
+            if len(mesh_vgs) == 0:
+                mesh_vgs = 'noGroups'
+            else:
+                mesh_vgs = mesh_vgs[0][:-5]
+            
+            parts[mesh_vgs].append(v.index)
+            parts[mesh_vgs].append(uv_face_mapping[f_index][vi])
+            parts[mesh_vgs].append(loops_to_normals[li])
     
     output = OrderedDict()
     output['positions'] = create_array_dict(3, len(position_array) // 3, position_array)
     output['uvs'] = create_array_dict(2, len(uv_array) // 2, uv_array)
     output['normals'] = create_array_dict(3, len(normal_array) // 3, normal_array)
-    output['indices'] = create_array_dict(3, len(indices_array) // 3, indices_array)
     
     # export skin weight data
     if bones is not None:
@@ -142,7 +153,7 @@ def export_mesh(obj, bones):
                     continue
                 w_val = max(min(vg.weight, 1.0), 0.0)
                 name = obj.vertex_groups[vg.group].name
-                if w_val > 0.0 and name not in appended_joints:
+                if w_val > 0.0 and name not in appended_joints and name[-5:] != "_mesh":
                     appended_joints.append(name)
                     weight_total += w_val
                     weight_list.append((name, w_val))
@@ -162,6 +173,12 @@ def export_mesh(obj, bones):
         output['vcounts'] = create_array_dict(1, len(vcounts), vcounts)
         output['weights'] = create_array_dict(1, len(weights), weights)
         output['vindices'] = create_array_dict(1, len(vindices), vindices)
+    
+    output['parts'] = {}
+    
+    for k, v in parts.items():
+        if len(v) > 0:
+            output['parts'][k] = create_array_dict(3, len(v) // 3, v)
     
     return output
 
