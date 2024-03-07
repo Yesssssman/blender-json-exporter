@@ -16,7 +16,7 @@ Since this exporter is designed for a very restricted purpose, I won't provide a
 
 ## Changelog
 
-1.0.3 - Ported it to Blender 3.6 (Credits: box7805)<br>  
+1.0.3 - Ported it to Blender 3.6 (Credits: [@box-777](https://github.com/box-777))<br>  
 1.0.2: Added the part ditingushing function by the vertex group it will store all vectices in the vertex group which is the name ends with "_mesh"<br>  
 1.0.1: Separated the option "export model" to "export mesh" and "export armature". This is because the armature data is useless to armors. Changed the hidden joints not to be exported.<br>  
 1.0.0: Created<br>  
