@@ -3,7 +3,10 @@ from _ctypes import PyObj_FromPtr
 import json
 import re
 
+import bmesh
 import bpy
+import math
+import mathutils
 
 class NoIndent(object):
     def __init__(self, value):
@@ -36,12 +39,11 @@ def ensure_extension( filepath, extension ):
         filepath += extension
     return filepath
 
-def mesh_triangulate(me):
-    import bmesh
+def mesh_triangulate(src, dest):
     bm = bmesh.new()
-    bm.from_mesh(me)
+    bm.from_mesh(src)
     bmesh.ops.triangulate(bm, faces=bm.faces)
-    bm.to_mesh(me)
+    bm.to_mesh(dest)
     bm.free()
 
 def veckey2d(v):
@@ -62,14 +64,26 @@ def create_array_dict(stride, count, array):
 
 def export_mesh(obj, bones):
     obj_mesh = obj.to_mesh(bpy.context.scene, False, calc_tessface=False, settings='PREVIEW')
-    mesh_triangulate(obj_mesh)
-    obj_mesh.calc_normals_split()
+    triangulated_mesh = bpy.data.meshes.new('triangulated_mesh')
+    mesh_triangulate(obj_mesh, triangulated_mesh)
+    triangulated_mesh.calc_normals_split()
     
-    # export vertex data
-    position_array = [round(f, 6) for v in obj_mesh.vertices for f in v.co[:]]
+    owner_polygons = {}
+    
+    for f in triangulated_mesh.polygons:
+        owners = [p for p in obj_mesh.polygons if all(x in [v for v in p.vertices] for x in [v for v in f.vertices])]
+        
+        if len(owners) != 1:
+            raise Exception('triangulation error');
+        
+        owner_polygons[f] = owners[0]
+    
+    # export vertices
+    position_array = [round(pos, 6) for v in triangulated_mesh.vertices for pos in v.co[:]]
+    
     uv_array = []
     normal_array = []
-    loops = obj_mesh.loops
+    loops = triangulated_mesh.loops
     
     uv_unique_count = no_unique_count = 0
     # export normal data
@@ -77,36 +91,49 @@ def export_mesh(obj, bones):
     normals_to_idx = {}
     no_get = normals_to_idx.get
     loops_to_normals = [0] * len(loops)
-    for f in obj_mesh.polygons:
+    
+    for f in triangulated_mesh.polygons:
         for l_idx in f.loop_indices:
             no_key = veckey3d(loops[l_idx].normal)
             no_val = no_get(no_key)
+            
             if no_val is None:
                 no_val = normals_to_idx[no_key] = no_unique_count
+                
                 for n_val in no_key:
                     normal_array.append(n_val)
+                
                 no_unique_count += 1
+            
             loops_to_normals[l_idx] = no_val
+    
     del normals_to_idx, no_get, no_key, no_val
     
     # export uv data
-    uv_layer = obj_mesh.uv_layers.active.data[:]
+    uv_layer = triangulated_mesh.uv_layers.active.data[:]
     uv = f_index = uv_index = uv_key = uv_val = uv_ls = None
-    uv_face_mapping = [None] * len(obj_mesh.polygons)
+    uv_face_mapping = [None] * len(triangulated_mesh.polygons)
     uv_dict = {}
     uv_get = uv_dict.get
-    for f_index, f in enumerate(obj_mesh.polygons):
+    
+    for f_index, f in enumerate(triangulated_mesh.polygons):
         uv_ls = uv_face_mapping[f_index] = []
+        
         for uv_index, l_index in enumerate(f.loop_indices):
             uv = uv_layer[l_index].uv
             uv_key = veckey2d(uv)
             uv_val = uv_get(uv_key)
+            
             if uv_val is None:
                 uv_val = uv_dict[uv_key] = uv_unique_count
+                
                 for i, uv_cor in enumerate(uv):
                     uv_array.append(round(uv_cor if i % 2 == 0 else 1-uv_cor, 6))
+                
                 uv_unique_count += 1
+            
             uv_ls.append(uv_val)
+    
     del uv_dict, uv, f_index, uv_index, uv_ls, uv_get, uv_key, uv_val
     
     parts = {'noGroups': []}
@@ -115,21 +142,38 @@ def export_mesh(obj, bones):
         if vg.name[-5:] == "_mesh":
             parts[vg.name[:-5]] = []
     
-    # export indice data
-    for f_index, f in enumerate(obj_mesh.polygons):
-        f_v = [(vi, obj_mesh.vertices[v_idx], l_idx) for vi, (v_idx, l_idx) in enumerate(zip(f.vertices, f.loop_indices))]
+    # export drawing indices
+    for f_index, f in enumerate(triangulated_mesh.polygons):
+        f_v = [(vi, triangulated_mesh.vertices[v_idx], l_idx) for vi, (v_idx, l_idx) in enumerate(zip(f.vertices, f.loop_indices))]
+        
+        polygons_part_indices = {}
+        polygons_part_indices['noGruops'] = []
+        
+        for name in parts.keys():
+            polygons_part_indices[name] = []
+        
         for vi, v, li in f_v:
             mesh_vgs = [obj.vertex_groups[vg.group].name for vg in v.groups]
             mesh_vgs = list(filter(lambda x: x[-5:] == "_mesh", mesh_vgs))
             
             if len(mesh_vgs) == 0:
-                mesh_vgs = 'noGroups'
+                i_list = polygons_part_indices['noGroups']
+                i_list.append(v.index)
+                i_list.append(uv_face_mapping[f_index][vi])
+                i_list.append(loops_to_normals[li])
             else:
-                mesh_vgs = mesh_vgs[0][:-5]
-            
-            parts[mesh_vgs].append(v.index)
-            parts[mesh_vgs].append(uv_face_mapping[f_index][vi])
-            parts[mesh_vgs].append(loops_to_normals[li])
+                for name in mesh_vgs:
+                    i_list = polygons_part_indices[name[:-5]]
+                    i_list.append(v.index)
+                    i_list.append(uv_face_mapping[f_index][vi])
+                    i_list.append(loops_to_normals[li])
+        
+        for part_name, i_list in polygons_part_indices.items():
+            if len(i_list) // 3 == len(f.vertices):
+                vg_names = [[obj.vertex_groups[vg.group].name[:-5] for vg in v.groups if obj.vertex_groups[vg.group].name[-5:] == '_mesh'] for v in [obj_mesh.vertices[vid] for vid in owner_polygons[f].vertices]]
+                
+                if all(part_name in names for names in vg_names):
+                    parts[part_name].extend(i_list)
     
     output = OrderedDict()
     output['positions'] = create_array_dict(3, len(position_array) // 3, position_array)
@@ -142,11 +186,11 @@ def export_mesh(obj, bones):
         weights = []
         vindices = []
         
-        for v in obj_mesh.vertices :
+        for v in triangulated_mesh.vertices :
             vc_val = 0;
             appended_joints = []
             weight_list = []
-            weight_total = 0
+            weight_total = 0.0
             
             for vg in v.groups:
                 if vg.group >= len(obj.vertex_groups):
@@ -158,11 +202,16 @@ def export_mesh(obj, bones):
                     weight_total += w_val
                     weight_list.append((name, w_val))
             
+            if weight_total == 0.0:
+                weight_total += 1.0
+                weight_list.append(('Root', 1.0))
+                print("Warn: Vertex", v.index, "is not grouped")
+            
             normalization = 1.0 / weight_total
             weight_list = [(name, round(e * normalization, 4)) for name, e in weight_list]
             
             for name, w_val in weight_list:
-                vindices.append(bones.index(name))
+                vindices.append(bones.index(name) if name in bones else 0)
                 if w_val not in weights:
                     weights.append(w_val)
                 vindices.append(weights.index(w_val))
@@ -213,7 +262,7 @@ def export_armature(obj):
     
     return output
 
-def export_animation(obj, bone_name_list):
+def export_animation(obj, bone_name_list, animation_format):
     scene = bpy.context.scene
     action = obj.animation_data.action
     bones = obj.data.bones
@@ -225,29 +274,58 @@ def export_animation(obj, bone_name_list):
         for curve in action.fcurves:
             keyframePoints = curve.keyframe_points
             name = curve.group.name
+            
             if name not in dope_sheet:
                 dope_sheet[name] = {'transform':[], 'timestamp':[]}
+            
             for keyframe in keyframePoints:
                 val = int(keyframe.co[0])
+                
                 if val not in dope_sheet[(name)]['timestamp']:
                     dope_sheet[(name)]['timestamp'].append(val)
+                
                 if val not in timelines:
                     timelines.append(val)
+        
         timelines.sort()
         
         for t in timelines:
             scene.frame_set(t)
+            
             for b in bones:
                 if b.name not in dope_sheet:
                     dope_sheet[b.name] = {'transform':[], 'timestamp':[]}
+                
                 if t in dope_sheet[b.name]['timestamp'] or t == 0 or t == timelines[-1]:
                     matrix = obj.pose.bones[b.name].matrix.copy()
-                    if (b.parent is not None):
-                        parent_pose_invert = obj.pose.bones[b.parent.name].matrix.inverted_safe()
-                        matrix = parent_pose_invert * matrix
-                    if t not in dope_sheet[b.name]['timestamp']:
-                        dope_sheet[b.name]['timestamp'].append(t)
-                    dope_sheet[b.name]['transform'].append(wrap_matrix(matrix))
+                    bone_local = b.matrix_local.copy()
+                    
+                    if animation_format == 'ATTR':
+                        if b.parent is not None:
+                            bone_local = b.parent.matrix_local.inverted_safe() * bone_local
+                            parent_pose_invert = obj.pose.bones[b.parent.name].matrix.inverted_safe()
+                            matrix = bone_local.inverted_safe() * parent_pose_invert * matrix
+                        else:
+                            matrix = bone_local.inverted_safe() * matrix
+                        
+                        if t not in dope_sheet[b.name]['timestamp']:
+                            dope_sheet[b.name]['timestamp'].append(t)
+                        
+                        loc, rot, sca = matrix.decompose()
+                        transformdict = OrderedDict()
+                        transformdict['loc'] = NoIndent([round(v, 6) for v in loc])
+                        transformdict['rot'] = NoIndent([round(v, 6) for v in rot])
+                        transformdict['sca'] = NoIndent([round(v, 6) for v in sca])
+                        dope_sheet[b.name]['transform'].append(transformdict)
+                    else:
+                        if (b.parent is not None):
+                            parent_pose_invert = obj.pose.bones[b.parent.name].matrix.inverted_safe()
+                            matrix = parent_pose_invert * matrix
+                        
+                        if t not in dope_sheet[b.name]['timestamp']:
+                            dope_sheet[b.name]['timestamp'].append(t)
+                        
+                        dope_sheet[b.name]['transform'].append(wrap_matrix(matrix))
         
         for b in bone_name_list:
             dict = OrderedDict()
@@ -258,35 +336,108 @@ def export_animation(obj, bone_name_list):
 
     return output
 
+def export_camera(camera_obj):
+    scene = bpy.context.scene
+    action = camera_obj.animation_data.action
+    transform = []
+    timestamp = []
+    
+    if action is not None:
+        kf_names = set([fcurve.group.name for fcurve in action.fcurves])
+        
+        if len(kf_names) != 1:
+            print(kf_names)
+            raise Exception('Camera transform sheet must have 1 keyframe')
+        
+        for curve in action.fcurves:
+            keyframePoints = curve.keyframe_points
+            
+            for keyframe in keyframePoints:
+                val = int(keyframe.co[0])
+                
+                if val not in timestamp:
+                    timestamp.append(val)
+        
+        timestamp.sort()
+        
+        for t in timestamp:
+            scene.frame_set(t)
+            world_mat = mathutils.Matrix.Translation(mathutils.Vector((0.0, 0.0, -1.62))) * camera_obj.matrix_world
+            world_mat = mathutils.Matrix.Rotation(math.radians(-90.0), 4, 'X') * world_mat
+            
+            loc, rot, sca = world_mat.decompose()
+            transformdict = OrderedDict()
+            transformdict['loc'] = NoIndent([round(v, 6) for v in loc])
+            transformdict['rot'] = NoIndent([round(v, 6) for v in rot])
+            transformdict['sca'] = NoIndent([round(v, 6) for v in sca])
+            transform.append(transformdict)
+        
+        output = OrderedDict()
+        output['time'] = NoIndent([round(t / (bpy.context.scene.render.fps), 4) for t in timestamp])
+        output['transform'] = transform
+    
+    return output
+
+# Correct the bone priority matching with vertex group's order
+def correct_bones_as_vertex_groups(obj, bones):
+    corrected_bone_names = []
+    
+    for vg in obj.vertex_groups:
+        if vg.name[-5:] != "_mesh" and vg.name != "Clothing" :
+            corrected_bone_names.append(vg.name)
+    
+    return corrected_bone_names
+
 def save(context, **kwargs):
     file_path = ensure_extension( kwargs['filepath'], ".json")
     output = OrderedDict()
-    mesh_obj = armature_obj = mesh_result = armature_result = animation_result = None
+    mesh_obj = armature_obj = camera_obj = mesh_result = armature_result = animation_result = camera_result = None
     
     export_msh = kwargs['export_mesh']
     export_armat = kwargs['export_armature']
     export_anim = kwargs['export_anim']
+    export_cam = kwargs['export_camera']
+    animation_format = kwargs['animation_format']
     
     for obj in context.scene.objects:
         if obj.type == 'MESH':
             mesh_obj = obj
         elif obj.type == 'ARMATURE':
             armature_obj = obj
+        elif obj.type == 'CAMERA':
+            camera_obj = obj
     
     if armature_obj is not None:
         armature_result = export_armature(armature_obj)
-        animation_result = export_animation(armature_obj, armature_result['joints'].value)
+        
+        if export_anim:
+            animation_result = export_animation(armature_obj, armature_result['joints'].value, animation_format)
     
-    if mesh_obj is not None and export_msh:
-        mesh_result = export_mesh(mesh_obj, armature_result['joints'].value if armature_obj is not None else None)
+    if mesh_obj is not None:
+        if armature_obj is not None:
+            armature_result['joints'].value = correct_bones_as_vertex_groups(mesh_obj, armature_result['joints'].value)
+        
+        if export_msh:
+            mesh_result = export_mesh(mesh_obj, armature_result['joints'].value if armature_obj is not None else None)
+    
+    if export_cam:
+        if camera_obj is None:
+            raise Exception('No camera object to export. Create camera object or uncheck Export Camera in export option.')
+        else:
+            camera_result = export_camera(camera_obj)
     
     if mesh_result is not None:
         output['vertices'] = mesh_result
     if armature_result is not None and export_armat:
         output['armature'] = armature_result
     if animation_result is not None and export_anim:
+        if animation_format == 'ATTR':
+            output['format'] = 'attributes'
         output['animation'] = animation_result
         
+    if camera_result is not None and export_cam:
+        output['camera'] = camera_result
+    
     json_to_string = json.dumps(output, cls=NoIndentEncoder, indent=4)
     
     with open(file_path, 'w') as outfile:
