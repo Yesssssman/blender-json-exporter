@@ -16,6 +16,8 @@ Since this exporter is designed for a very restricted purpose, I won't provide a
 
 ## Changelog
 
+2.0.1: Fixed camera animation export error caused by quaternion <-> matrix transformation.
+
 2.0.0: Added camera export for pov animation, Added animation formatting to optimize animation expression (Attribute format is recommended more than Matrix format)
 
 1.0.2: Added the part ditingushing function by the vertex group it will store all vectices in the vertex group which is the name ends with "_mesh"
