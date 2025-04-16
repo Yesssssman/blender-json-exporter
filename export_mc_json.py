@@ -231,17 +231,21 @@ def export_mesh(obj, bones):
     
     return output
 
-def export_armature(obj):
-    def export_bones(b, list, dict):
-        list.append(b.name)
+def export_armature(obj, export_visible_bones):
+    def export_bones(b, list, dict, export_visible_bones):
+        if export_visible_bones and b.hide:
+            return
         
+        list.append(b.name)
         matrix = b.matrix_local
+        
         if (b.parent is not None):
             matrix = b.parent.matrix_local.inverted_safe() * matrix
         
         dict['name'] = b.name
         dict['transform'] = wrap_matrix(matrix)
-        dict['children'] = [export_bones(child, list, OrderedDict()) for child in b.children]
+        dict['children'] = [export_bones(child, list, OrderedDict(), export_visible_bones) for child in b.children]
+        
         return dict
     
     output = OrderedDict()
@@ -250,11 +254,10 @@ def export_armature(obj):
     bone_hierarchy = []
     
     for b in obj.data.bones:
-        if (b.parent is not None):
+        if b.parent is not None:
             continue
-        if (b.hide):
-            continue
-        b_dic = export_bones(b, bones, OrderedDict())
+        
+        b_dic = export_bones(b, bones, OrderedDict(), export_visible_bones)
         bone_hierarchy.append(b_dic)
     
     output['joints'] = NoIndent(bones)
@@ -363,9 +366,13 @@ def export_camera(camera_obj):
         for t in timestamp:
             scene.frame_set(t)
             world_mat = mathutils.Matrix.Translation(mathutils.Vector((0.0, 0.0, -1.62))) * camera_obj.matrix_world
-            world_mat = mathutils.Matrix.Rotation(math.radians(-90.0), 4, 'X') * world_mat
             
             loc, rot, sca = world_mat.decompose()
+            blender_to_minecraft_coord = mathutils.Quaternion((1.0, 0.0, 0.0), math.radians(-90.0))
+            
+            loc.rotate(blender_to_minecraft_coord)
+            rot.rotate(blender_to_minecraft_coord)
+            
             transformdict = OrderedDict()
             transformdict['loc'] = NoIndent([round(v, 6) for v in loc])
             transformdict['rot'] = NoIndent([round(v, 6) for v in rot])
@@ -398,6 +405,7 @@ def save(context, **kwargs):
     export_anim = kwargs['export_anim']
     export_cam = kwargs['export_camera']
     animation_format = kwargs['animation_format']
+    export_visible_bones = kwargs['export_only_visible_bones']
     
     for obj in context.scene.objects:
         if obj.type == 'MESH':
@@ -408,7 +416,7 @@ def save(context, **kwargs):
             camera_obj = obj
     
     if armature_obj is not None:
-        armature_result = export_armature(armature_obj)
+        armature_result = export_armature(armature_obj, export_visible_bones)
         
         if export_anim:
             animation_result = export_animation(armature_obj, armature_result['joints'].value, animation_format)

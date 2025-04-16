@@ -17,11 +17,11 @@ class ExportToJson(bpy.types.Operator, ExportHelper):
     bl_label = "Export to Json for Minecraft"         # Display name in the interface.
     filename_ext = ".json"
     filter_glob = StringProperty(default="*.json", options={"HIDDEN"})
-
+    
     @classmethod
-    def poll( cls, csaontext ):
+    def poll( cls, context ):
         return context.active_object != None
-
+    
     export_anim = BoolProperty(
         name="Export Animation",
         description="Export animation data",
@@ -58,11 +58,17 @@ class ExportToJson(bpy.types.Operator, ExportHelper):
         items=transform_formats
     )
     
+    export_only_visible_bones = BoolProperty(
+        name="Export Only Visible Bones",
+        description="Export bones that are visible. Warning: Child bones of hidden bones won't export too",
+        default=False
+    )
+    
     def execute(self, context):
         if not self.filepath:
             raise Exception("filepath not set")    
         keywords = self.as_keywords()
-        print('keyward is ', keywords)
+        print('keywards are ', keywords)
         
         from . import export_mc_json
         return export_mc_json.save(context, **keywords)
