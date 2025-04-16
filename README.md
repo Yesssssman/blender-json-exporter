@@ -16,6 +16,8 @@ Since this exporter is designed for a very restricted purpose, I won't provide a
 
 ## Changelog
 
+2.0.2: Added 'Export only visible bones' option applied to exporting armature and animation
+
 2.0.1: Fixed camera animation export error caused by quaternion <-> matrix transformation.
 
 2.0.0: Added camera export for pov animation, Added animation formatting to optimize animation expression (Attribute format is recommended more than Matrix format)
